@@ -1,98 +1,130 @@
 #Runs the actual experiment
-#Writes to a png and csv with all restuls
+#Writes to a png and csv with all results
 #What graph is used and what update method is used can be changed
 
 #Requires matplotlib, as well as the graphs.py and algorithms.py files
 
-import time, csv
+import time, csv, random
 import matplotlib.pyplot as plt
-from graphs import generate_random_graph
+from graphs import generate_random_graph, generate_grid_graph, generate_road_graph
 from algorithms import Dijkstra, DynamicDijkstra, LPAStar, DStarLite
+
+
+def measure_algorithms(G, source, target, update_func):
+    dijkstra = Dijkstra(G)
+    dyn_dij = DynamicDijkstra(G, source)
+    lpa = LPAStar(G, source, target, heuristic=lambda u, v: 0)
+    dstar = DStarLite(G, source, target, heuristic=lambda u, v: 0)
+
+    dijkstra.shortest_path(source, target)
+    dyn_dij.shortest_path(target)
+    lpa.shortest_path()
+    dstar.shortest_path()
+
+    start = time.perf_counter()
+    update_func(G)
+    dist_static, _ = dijkstra.shortest_path(source, target)
+    t_static = time.perf_counter() - start
+
+    start = time.perf_counter()
+    update_func(dyn_dij.graph)
+    dist_dyn, _ = dyn_dij.shortest_path(target)
+    t_dyn = time.perf_counter() - start
+
+    start = time.perf_counter()
+    update_func(lpa.graph)
+    dist_lpa, _ = lpa.shortest_path()
+    t_lpa = time.perf_counter() - start
+
+    start = time.perf_counter()
+    update_func(dstar.graph)
+    dist_dstar, _ = dstar.shortest_path()
+    t_dstar = time.perf_counter() - start
+
+    return {
+        "Static": (t_static, dijkstra.nodes_expanded, dist_static),
+        "Dynamic": (t_dyn, dyn_dij.nodes_expanded, dist_dyn),
+        "LPA*": (t_lpa, lpa.nodes_expanded, dist_lpa),
+        "D* Lite": (t_dstar, dstar.nodes_expanded, dist_dstar)
+    }
+
+
+def single_edge_increase(G):
+    u, v = list(G.edges())[0]
+    G[u][v]['weight'] *= 2
+
+
+def single_edge_decrease(G):
+    u, v = list(G.edges())[0]
+    G[u][v]['weight'] *= 0.5
+
+
+def localized_cluster_update(G, cluster_size=5):
+    edges = list(G.edges())[:cluster_size]
+
+    for u, v in edges:
+        G[u][v]['weight'] *= random.uniform(0.5, 2.0)
+
+
+def repeated_streaming_updates(G, num_updates=10):
+    edges = list(G.edges())
+
+    for _ in range(num_updates):
+        u, v = random.choice(edges)
+        G[u][v]['weight'] *= random.uniform(0.5, 2.0)
+
 
 def run_experiment():
     #create a test graph and define source/target
-    G = generate_random_graph(50, 0.1, directed=True)
+    #Below in comments are two other cases for getting graphs
+
+    G = generate_random_graph(50, 0.3, directed=True)
+    #G = generate_grid_graph(50, 20, directed=True)
+    #G = generate_road_graph(50, 30, directed=True)
+
     nodes = list(G.nodes())
     source, target = nodes[0], nodes[-1]
 
-    #initialize algorithms
-    dijkstra    = Dijkstra(G)
-    dyn_dij     = DynamicDijkstra(G, source)
-    lpa         = LPAStar(G, source, target, heuristic=lambda u,v: 0)
-    dstar       = DStarLite(G, source, target, heuristic=lambda u,v: 0)
+    experiments = {
+        "Single Edge Increase": single_edge_increase,
+        "Single Edge Decrease": single_edge_decrease,
+        "Localized Cluster Update": localized_cluster_update,
+        "Repeated Streaming Update": repeated_streaming_updates
+    }
 
-    #baseline shortest paths static
-    start = time.perf_counter()
-    dist0, path0 = dijkstra.shortest_path(source, target)
-    t0 = time.perf_counter() - start
+    all_results = []
 
-    start = time.perf_counter()
-    dist0b, path0b = dyn_dij.shortest_path(target)
-    t0b = time.perf_counter() - start
+    for exp_name, update_func in experiments.items():
+        print(f"\nRunning: {exp_name}")
 
-    start = time.perf_counter()
-    dist0c, path0c = lpa.shortest_path()
-    t0c = time.perf_counter() - start
+        results = measure_algorithms(G.copy(), source, target, update_func)
 
-    start = time.perf_counter()
-    dist0d, path0d = dstar.shortest_path()
-    t0d = time.perf_counter() - start
+        labels = list(results.keys())
+        times = [results[label][0] for label in labels]
 
-    print("Initial path lengths:", dist0, dist0b, dist0c, dist0d)
+        #WRITE TO PLT
+        plt.figure(figsize=(6, 4))
+        plt.bar(labels, times)
+        plt.ylabel("Time (seconds)")
+        plt.title(exp_name)
+        plt.savefig(f"{exp_name.replace(' ', '_').lower()}.png")
+        plt.show()
 
-    #Single-edge increase: increase one edge weight
-    u,v = list(G.edges())[0]
-    old_w = G[u][v]['weight']
-    new_w = old_w * 2
+        for algo, vals in results.items():
+            all_results.append([exp_name, algo, vals[0], vals[1], vals[2]])
 
-    #Static (recompute)
-    start = time.perf_counter()
-    dist_static, path_static = dijkstra.shortest_path(source, target)
-    t_static = time.perf_counter() - start
-
-    #Dynamic Dijkstra update
-    start = time.perf_counter()
-    dyn_dij.update_edge(u, v, new_w)
-    dist_dyn, path_dyn = dyn_dij.shortest_path(target)
-    t_dyn = time.perf_counter() - start
-
-    #LPA* update (mark node for update then replan)
-    start = time.perf_counter()
-    lpa.update_vertex(v)
-    dist_lpa, path_lpa = lpa.shortest_path()
-    t_lpa = time.perf_counter() - start
-
-    #D* Lite update
-    start = time.perf_counter()
-    dstar.update_edge(u, v, new_w)
-    dist_dstar, path_dstar = dstar.shortest_path()
-    t_dstar = time.perf_counter() - start
-
-    print("After weight increase (new distances):",
-          dist_dyn, dist_lpa, dist_dstar)
-    print(f"Time (sec): static={t_static:.4f}, dyn={t_dyn:.4f}, lpa={t_lpa:.4f}, dstar={t_dstar:.4f}")
-    print("Nodes expanded (in update):",
-          dijkstra.nodes_expanded, dyn_dij.nodes_expanded,
-          lpa.nodes_expanded, dstar.nodes_expanded)
-
-    # WRITE TO PLT
-    labels = ['Static', 'Dynamic', 'LPA*', 'D* Lite']
-    values = [dijkstra.nodes_expanded, dyn_dij.nodes_expanded, lpa.nodes_expanded, dstar.nodes_expanded]
-    plt.figure(figsize=(6,4))
-    plt.bar(labels, values, color=['gray','blue','green','orange'])
-    plt.ylabel("Nodes expanded on update")
-    plt.title("Comparison after single-edge weight increase")
-    plt.savefig("update_comparison.png")
-    plt.show()
-
-    # WRITE TO CSV
-    with open('results.csv','w', newline='') as f:
+    #WRITE TO CSV
+    with open("results.csv", "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(['Algorithm','Time','NodesExpanded','PathLength'])
-        writer.writerow(['Static Dijkstra',   t_static, dijkstra.nodes_expanded, dist_static])
-        writer.writerow(['Dynamic Dijkstra',  t_dyn,    dyn_dij.nodes_expanded,  dist_dyn])
-        writer.writerow(['LPA*',              t_lpa,    lpa.nodes_expanded,      dist_lpa])
-        writer.writerow(['D* Lite',          t_dstar,  dstar.nodes_expanded,    dist_dstar])
+        writer.writerow([
+            "Experiment",
+            "Algorithm",
+            "Time",
+            "NodesExpanded",
+            "PathLength"
+        ])
+        writer.writerows(all_results)
+
 
 if __name__ == "__main__":
     run_experiment()
